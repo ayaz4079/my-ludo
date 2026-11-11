@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Offline Ludo 4</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101827;color:#f8fafc;font-family:system-ui,Arial;display:flex;justify-content:center}
+.app{width:min(100vw,720px);padding:14px;display:flex;flex-direction:column;gap:12px}
+h1{font-size:25px;text-align:center;margin:3px 0;color:#fff}.sub{text-align:center;color:#aab8ce;font-size:13px;margin-top:-8px}
+.panel{background:#1c293d;border:1px solid #31415b;border-radius:16px;padding:12px}
+.turn{display:flex;align-items:center;justify-content:space-between;gap:8px}.turn strong{font-size:17px}
+#status{font-size:13px;color:#d5dfef;margin-top:6px;min-height:19px}
+.boardWrap{width:100%;aspect-ratio:1;background:#f8fafc;border-radius:18px;overflow:hidden;box-shadow:0 10px 30px #0005}
+canvas{width:100%;height:100%;display:block;touch-action:manipulation}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{border:0;border-radius:13px;padding:13px 9px;font-size:16px;font-weight:800;color:#fff;background:#334155}
+button:disabled{opacity:.45}#roll{background:#2563eb}#next{background:#475569}
+.diceRow{display:flex;gap:10px;justify-content:center;margin-top:10px}
+.die{background:#fff;color:#172033;border-radius:12px;width:54px;height:54px;display:grid;place-items:center;font-size:30px;font-weight:900;box-shadow:inset 0 -3px #cbd5e1}
+.players{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.player{border-radius:10px;padding:8px 3px;text-align:center;font-size:12px;background:#29384e;border:2px solid transparent}
+.player.active{border-color:#fff}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px}
+.note{font-size:11px;color:#9fb0c9;line-height:1.4;text-align:center}
+</style></head>
+<body><main class="app">
+<h1>🎲 Offline Ludo 4</h1><div class="sub">4 players · one phone · no internet needed</div>
+<section class="panel">
+ <div class="turn"><strong id="turn">🔴 Red's turn</strong><span id="phase">Ready</span></div>
+ <div id="status">Tap Roll 2 Dice to begin your turn.</div>
+ <div class="diceRow"><div class="die" id="d1">–</div><div class="die" id="d2">–</div></div>
+</section>
+<div class="boardWrap"><canvas id="board" width="600" height="600"></canvas></div>
+<section class="panel">
+ <div class="players" id="players"></div>
+ <div class="controls" style="margin-top:10px">
+  <button id="roll">🎲 Roll 2 Dice</button><button id="next" disabled>Finish Turn</button>
+ </div>
+</section>
+<div class="note">Each die is used separately: roll both, tap a token for die 1, then tap a token for die 2. A 6 brings a token out of its yard. First player to bring all 4 tokens home wins.</div>
+</main>
+<script>
+const cvs=document.getElementById('board'),ctx=cvs.getContext('2d');
+const names=['Red','Green','Yellow','Blue'], colors=['#e53935','#21a45b','#f5c542','#2878e5'];
+const pale=['#ffc5c2','#b9edce','#fff0a8','#b9d8ff'];
+// 52-cell square loop around the outside of a 15x15 board.
+const path=[];
+for(let x=6;x<=8;x++) path.push([x,0]);
+for(let y=1;y<=5;y++) path.push([8,y]);
+for(let y=0;y<=5;y++) path.push([9,y]);
+for(let x=10;x<=14;x++) path.push([x,6]);
+for(let y=7;y<=8;y++) path.push([14,y]);
+for(let x=13;x>=9;x--) path.push([x,8]);
+for(let x=14;x>=9;x--) path.push([x,9]);
+for(let y=10;y<=14;y++) path.push([8,y]);
+for(let y=14;y>=9;y--) path.push([6,y]);
+for(let x=5;x>=0;x--) path.push([x,8]);
+for(let x=0;x<=5;x++) path.push([x,6]);
+for(let y=5;y>=0;y--) path.push([6,y]);
+// trim/normalize to 52 unique route cells
+const route=path.slice(0,52);
+const lanes=[
+ [[7,1],[7,2],[7,3],[7,4],[7,5],[7,6]],
+ [[13,7],[12,7],[11,7],[10,7],[9,7],[8,7]],
+ [[7,13],[7,12],[7,11],[7,10],[7,9],[7,8]],
+ [[1,7],[2,7],[3,7],[4,7],[5,7],[6,7]]
+];
+const starts=[0,13,26,39];
+let current=0, dice=[], dieIndex=0, rolling=false, winner=-1;
+let tokens=names.map(()=>[-1,-1,-1,-1]); // -1 yard; 0..51 loop; 52..57 home lane
+let legal=[];
+function cellCenter(c){return [(c[0]+.5)*40,(c[1]+.5)*40]}
+function tokenPos(p,t){
+ const v=tokens[p][t];
+ if(v<0){
+  const bases=[[[1.7,1.7],[4.3,1.7],[1.7,4.3],[4.3,4.3]],[[10.7,1.7],[13.3,1.7],[10.7,4.3],[13.3,4.3]],[[10.7,10.7],[13.3,10.7],[10.7,13.3],[13.3,13.3]],[[1.7,10.7],[4.3,10.7],[1.7,13.3],[4.3,13.3]]];
+  return [bases[p][t][0]*40,bases[p][t][1]*40];
+ }
+ if(v>=52) return cellCenter(lanes[p][v-52]);
+ return cellCenter(route[(starts[p]+v)%52]);
+}
+function draw(){
+ ctx.clearRect(0,0,600,600);ctx.fillStyle='#f8fafc';ctx.fillRect(0,0,600,600);
+ const zones=[[0,0],[9,0],[9,9],[0,9]];
+ zones.forEach((z,i)=>{ctx.fillStyle=pale[i];ctx.fillRect(z[0]*40,z[1]*40,240,240);ctx.fillStyle=colors[i];ctx.globalAlpha=.18;ctx.fillRect((z[0]+1)*40,(z[1]+1)*40,160,160);ctx.globalAlpha=1;
+ ctx.fillStyle=colors[i];ctx.font='bold 19px system-ui';ctx.textAlign='center';ctx.fillText(names[i].toUpperCase(),(z[0]+3)*40,(z[1]+.65)*40);});
+ // route tiles
+ route.forEach((c,i)=>{let [x,y]=cellCenter(c);ctx.fillStyle='#fff';ctx.strokeStyle='#cbd5e1';ctx.lineWidth=2;ctx.fillRect(c[0]*40+1,c[1]*40+1,38,38);ctx.strokeRect(c[0]*40+1,c[1]*40+1,38,38);
+ if(starts.includes(i)){let p=starts.indexOf(i);ctx.fillStyle=colors[p];ctx.fillRect(c[0]*40+2,c[1]*40+2,36,36);}
+ });
+ lanes.forEach((lane,p)=>lane.forEach((c,j)=>{ctx.fillStyle=j===5?colors[p]:pale[p];ctx.fillRect(c[0]*40+1,c[1]*40+1,38,38);ctx.strokeStyle='#94a3b8';ctx.strokeRect(c[0]*40+1,c[1]*40+1,38,38);}));
+ // center finish triangles
+ ctx.fillStyle=colors[0];ctx.beginPath();ctx.moveTo(300,300);ctx.lineTo(240,240);ctx.lineTo(300,240);ctx.fill();
+ ctx.fillStyle=colors[1];ctx.beginPath();ctx.moveTo(300,300);ctx.lineTo(360,240);ctx.lineTo(300,240);ctx.fill();
+ ctx.fillStyle=colors[2];ctx.beginPath();ctx.moveTo(300,300);ctx.lineTo(360,360);ctx.lineTo(300,360);ctx.fill();
+ ctx.fillStyle=colors[3];ctx.beginPath();ctx.moveTo(300,300);ctx.lineTo(240,360);ctx.lineTo(300,360);ctx.fill();
+ // home yards
+ zones.forEach((z,p)=>{ctx.fillStyle='#fff';ctx.beginPath();ctx.roundRect((z[0]+.8)*40,(z[1]+.8)*40,176,176,20);ctx.fill();ctx.strokeStyle=colors[p];ctx.lineWidth=5;ctx.stroke();});
+ // tokens
+ for(let p=0;p<4;p++)for(let t=0;t<4;t++){let [x,y]=tokenPos(p,t);ctx.beginPath();ctx.arc(x,y,15,0,Math.PI*2);ctx.fillStyle=colors[p];ctx.fill();ctx.lineWidth=(p===current&&legal.includes(t))?5:2;ctx.strokeStyle=(p===current&&legal.includes(t))?'#111827':'#fff';ctx.stroke();ctx.fillStyle='#fff';ctx.font='bold 13px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(String(t+1),x,y);}
+}
+function setStatus(s){document.getElementById('status').textContent=s}
+function update(){
+ document.getElementById('turn').textContent=['🔴','🟢','🟡','🔵'][current]+" "+names[current]+"'s turn";
+ document.getElementById('phase').textContent=winner>=0?'Winner':(dice.length?`Die ${dieIndex+1} of 2`:'Ready');
+ document.getElementById('d1').textContent=dice.length?dice[0]:'–';document.getElementById('d2').textContent=dice.length?dice[1]:'–';
+ document.getElementById('roll').disabled=dice.length>0||winner>=0;
+ document.getElementById('next').disabled=!(dice.length>0&&dieIndex>=2)||winner>=0;
+ document.getElementById('players').innerHTML=names.map((n,p)=>`<div class="player ${p===current?'active':''}"><span class="dot" style="background:${colors[p]}"></span>${n}<br>${tokens[p].filter(v=>v===57).length}/4 home</div>`).join('');
+ draw();
+}
+function canMove(p,t,n){let v=tokens[p][t];if(v===-1)return n===6;if(v+n>57)return false;return true}
+function beginDie(){
+ if(dieIndex>=2){finishTurn();return}
+ legal=[];for(let t=0;t<4;t++)if(canMove(current,t,dice[dieIndex]))legal.push(t);
+ if(!legal.length){setStatus(`No token can use ${dice[dieIndex]}. Skipping this die.`);dieIndex++;setTimeout(beginDie,550);return}
+ setStatus(`Die ${dieIndex+1}: ${dice[dieIndex]}. Tap one of your highlighted tokens.`);
+ update();
+}
+function roll(){
+ if(dice.length||winner>=0)return;
+ dice=[1+Math.floor(Math.random()*6),1+Math.floor(Math.random()*6)];dieIndex=0;
+ setStatus('Both dice rolled. Use the first die by tapping a token.');
+ beginDie();update();
+}
+function moveToken(t){
+ if(!dice.length||!legal.includes(t)||winner>=0)return;
+ const n=dice[dieIndex],v=tokens[current][t];
+ tokens[current][t]=v===-1?0:v+n;
+ // capture on non-safe route squares
+ const landing=tokens[current][t];
+ if(landing<52){
+  const abs=(starts[current]+landing)%52;
+  const safe=[0,8,13,21,26,34,39,47];
+  if(!safe.includes(abs)){
+   for(let p=0;p<4;p++)if(p!==current)for(let k=0;k<4;k++){
+    let ov=tokens[p][k];if(ov>=0&&ov<52&&(starts[p]+ov)%52===abs)tokens[p][k]=-1;
+   }
+  }
+ }
+ dieIndex++;legal=[];
+ if(tokens[current].every(v=>v===57)){winner=current;setStatus(`${names[current]} wins! 🎉`);update();return}
+ if(dieIndex<2){setStatus('Great! Now use the second die.');beginDie()}
+ else {setStatus('Both dice used. Finish your turn.');}
+ update();
+}
+function finishTurn(){
+ if(!(dice.length&&dieIndex>=2))return;
+ dice=[];dieIndex=0;legal=[];current=(current+1)%4;setStatus(`${names[current]}: tap Roll 2 Dice to start.`);update();
+}
+cvs.addEventListener('click',e=>{
+ const r=cvs.getBoundingClientRect(),x=(e.clientX-r.left)*600/r.width,y=(e.clientY-r.top)*600/r.height;
+ for(let t=0;t<4;t++){let [tx,ty]=tokenPos(current,t);if(Math.hypot(x-tx,y-ty)<23){moveToken(t);return}}
+});
+document.getElementById('roll').onclick=roll;document.getElementById('next').onclick=finishTurn;
+update();
+</script></body></html>
